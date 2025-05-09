@@ -6,6 +6,7 @@ import joblib
 import matplotlib.pyplot as plt
 import pandas as pd
 import librosa
+import requests
 
 # Page configuration
 st.set_page_config(
@@ -17,11 +18,31 @@ st.set_page_config(
 # Custom CSS for better UI
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 42px;
+    .company-name {
+        font-size: 56px;
         font-weight: bold;
-        color: #1E88E5;
+        text-align: center;
         margin-bottom: 10px;
+        color: #2C3E50;
+        font-family: 'Arial', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        padding: 20px;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    }
+    .separator-line {
+        height: 3px;
+        background: linear-gradient(90deg, #2C3E50, #3498DB, #2C3E50);
+        margin: 10px auto 30px auto;
+        width: 80%;
+        border-radius: 2px;
+    }
+    .main-header {
+        font-size: 38px;
+        font-weight: bold;
+        color: #34495E;
+        margin-bottom: 20px;
+        text-align: center;
     }
     .sub-header {
         font-size: 26px;
@@ -53,6 +74,10 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Add company name and separator line before main header
+st.markdown('<div class="company-name">Sri Madhura Engineering</div>', unsafe_allow_html=True)
+st.markdown('<div class="separator-line"></div>', unsafe_allow_html=True)
 
 # Load both models, scaler, and label encoder
 @st.cache_resource
@@ -105,6 +130,24 @@ def process_audio(audio_file):
     except Exception as e:
         st.error(f"Error processing audio: {e}")
         return None
+
+def send_to_backend(file, input_type, prediction_output):
+    try:
+        files = {'file': file}
+        data = {
+            'input_type': input_type,
+            'output': prediction_output
+        }
+        response = requests.post('http://localhost:5000/upload', files=files, data=data)
+        if response.status_code == 200:
+            st.success("✅ Results saved to database successfully!")
+            return True
+        else:
+            st.error(f"❌ Failed to save to database: {response.json().get('error')}")
+            return False
+    except Exception as e:
+        st.error(f"❌ Error connecting to backend server: {e}")
+        return False
 
 # UI Components
 st.markdown('<div class="main-header">🔧 Bearing Fault Detection System</div>', unsafe_allow_html=True)
@@ -162,6 +205,16 @@ with tab1:
                         lstm_label, lstm_features, lstm_probs = predict_fault(data, lstm_model, "LSTM")
                         cnn_lstm_label, cnn_lstm_features, cnn_lstm_probs = predict_fault(data, cnn_lstm_model, "CNN-LSTM")
                         
+                        # Save results to backend
+                        if uploaded_file:
+                            uploaded_file.seek(0)  # Reset file pointer
+                            prediction_output = f"LSTM: {lstm_label}, CNN-LSTM: {cnn_lstm_label}"
+                            send_to_backend(
+                                uploaded_file,
+                                input_type,
+                                prediction_output
+                            )
+
                         st.markdown("### 🔍 Diagnosis Results")
                         col_lstm, col_cnn_lstm = st.columns(2)
                         
