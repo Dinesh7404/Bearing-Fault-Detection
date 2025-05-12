@@ -6,7 +6,12 @@ import joblib
 import matplotlib.pyplot as plt
 import pandas as pd
 import librosa
-import requests
+import os
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+from datetime import datetime
+from io import BytesIO
+import openpyxl
 
 # Page configuration
 st.set_page_config(
@@ -95,6 +100,41 @@ def load_artifacts():
 lstm_model, cnn_lstm_model, scaler, label_encoder = load_artifacts()
 models_loaded = lstm_model is not None and cnn_lstm_model is not None
 
+# MongoDB Atlas setup
+@st.cache_resource
+def init_mongodb():
+    try:
+        # MongoDB Atlas connection string
+        connection_string = "mongodb+srv://dinesh:6650@cluster0.slrycce.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+        
+        # For secure credential handling, use Streamlit secrets or environment variables (uncomment as needed):
+        # connection_string = st.secrets["mongodb"]["connection_string"]  # Use with secrets.toml
+        # from dotenv import load_dotenv; load_dotenv(); connection_string = os.getenv("MONGODB_URI")  # Use with .env
+
+        # Initialize MongoDB client
+        client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+        
+        # Test the connection
+        client.admin.command('ping')
+        
+        # Access the database
+        db = client["bearing_fault_detection"]
+        
+        #st.success("Successfully connected to MongoDB Atlas!")
+        return db
+    
+    except ConnectionFailure as e:
+        st.error(f"Failed to connect to MongoDB Atlas: {e}")
+        return None
+    except Exception as e:
+        st.error(f"An error occurred while connecting to MongoDB Atlas: {e}")
+        return None
+
+# Initialize MongoDB and create upload directory
+db = init_mongodb()
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # Feature extraction function
 def extract_features(data):
     max_val = np.max(data)
@@ -131,23 +171,66 @@ def process_audio(audio_file):
         st.error(f"Error processing audio: {e}")
         return None
 
-def send_to_backend(file, input_type, prediction_output):
+# Save prediction to MongoDB
+def save_prediction(file, input_type, prediction_output):
     try:
-        files = {'file': file}
-        data = {
-            'input_type': input_type,
-            'output': prediction_output
+        if db is None:
+            st.error("Database connection not available")
+            return False
+            
+        # Save file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_filename = file.name
+        filename = f"{timestamp}_{original_filename}"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        
+        try:
+            with open(filepath, 'wb') as f:
+                f.write(file.getbuffer())
+        except IOError as e:
+            st.error(f"❌ Error saving file: {e}")
+            return False
+            
+        # Store metadata in MongoDB
+        document = {
+            "original_filename": original_filename,
+            "saved_filename": filename,
+            "filepath": filepath,
+            "timestamp": datetime.now(),
+            "output": prediction_output,
+            "input_type": input_type,
         }
-        response = requests.post('http://localhost:5000/upload', files=files, data=data)
-        if response.status_code == 200:
+        
+        try:
+            db.uploads.insert_one(document)
             st.success("✅ Results saved to database successfully!")
             return True
-        else:
-            st.error(f"❌ Failed to save to database: {response.json().get('error')}")
+        except Exception as e:
+            st.error(f"❌ Error saving to database: {e}")
             return False
+            
     except Exception as e:
-        st.error(f"❌ Error connecting to backend server: {e}")
+        st.error(f"❌ Error saving results: {e}")
         return False
+
+# Fetch history data from MongoDB
+def fetch_history_data():
+    if db is None:
+        st.error("Database connection not available")
+        return None
+    try:
+        data = list(db.uploads.find({}, {'_id': 0}))
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Error fetching history: {e}")
+        return None
+
+# Download data as Excel
+def download_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='History')
+    return output.getvalue()
 
 # UI Components
 st.markdown('<div class="main-header">🔧 Bearing Fault Detection System</div>', unsafe_allow_html=True)
@@ -159,7 +242,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Main content in tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Prediction", "ℹ️ Features Explained", "🧠 Models", "📝 Data Collection"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Prediction", "ℹ️ Features Explained", "🧠 Models", "📝 Data Collection", "📜 History"])
 
 with tab1:
     col1, col2 = st.columns([1, 1])
@@ -209,7 +292,7 @@ with tab1:
                         if uploaded_file:
                             uploaded_file.seek(0)  # Reset file pointer
                             prediction_output = f"LSTM: {lstm_label}, CNN-LSTM: {cnn_lstm_label}"
-                            send_to_backend(
+                            save_prediction(
                                 uploaded_file,
                                 input_type,
                                 prediction_output
@@ -508,6 +591,47 @@ with tab4:
     - Cylindrical/tapered roller bearings
     - Angular contact/thrust bearings
     """)
+
+with tab5:
+    st.markdown('<div class="sub-header">Analysis History</div>', unsafe_allow_html=True)
+    
+    # Fetch historical data
+    history_df = fetch_history_data()
+    
+    if history_df is not None and not history_df.empty:
+        # Add download button
+        excel_data = download_excel(history_df)
+        st.download_button(
+            label="📥 Download History as Excel",
+            data=excel_data,
+            file_name="bearing_analysis_history.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # Display history table with formatting
+        st.markdown("### Previous Analyses")
+        
+        # Format timestamp
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Reorder and rename columns for display
+        display_columns = {
+            'timestamp': 'Date & Time',
+            'input_type': 'Input Type',
+            'original_filename': 'File Name',
+            'output': 'Prediction Results'
+        }
+        
+        display_df = history_df[display_columns.keys()].rename(columns=display_columns)
+        
+        # Display table with custom styling
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No analysis history available yet.")
 
 # Footer
 st.markdown("---")
