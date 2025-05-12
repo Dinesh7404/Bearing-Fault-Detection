@@ -57,11 +57,19 @@ st.markdown("""
         margin-bottom: 15px;
     }
     .info-box {
-        background-color: #000000;
+        background-color: #f8f9fa; /* Light theme default */
+        color: #333; /* Dark text for light background */
         padding: 20px;
         border-radius: 10px;
         border-left: 5px solid #1E88E5;
         margin-bottom: 20px;
+    }
+    /* Dark theme adjustments */
+    @media (prefers-color-scheme: dark) {
+        .info-box {
+            background-color: #2c2f33; /* Dark theme background */
+            color: #e0e0e0; /* Light text for dark background */
+        }
     }
     .feature-card {
         background-color: #f8f9fa;
